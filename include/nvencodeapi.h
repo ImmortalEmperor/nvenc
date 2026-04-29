@@ -57,10 +57,10 @@ typedef struct _NV_ENC_SEI_PAYLOAD NV_ENC_SEI_PAYLOAD;
 typedef struct _NV_ENC_LOCK_BITSTREAM NV_ENC_LOCK_BITSTREAM;
 typedef struct _NV_ENC_LOCK_INPUT_BUFFER NV_ENC_LOCK_INPUT_BUFFER;
 typedef struct _NV_ENC_MAP_INPUT_RESOURCE NV_ENC_MAP_INPUT_RESOURCE;
-typedef struct _NV_ENC_REGISTER_RESOURCE NV_ENC_REGISTER_RESOURCE;
 typedef struct _NV_ENC_STAT NV_ENC_STAT;
 typedef struct _NV_ENC_SEQUENCE_PARAM_PAYLOAD NV_ENC_SEQUENCE_PARAM_PAYLOAD;
 typedef struct _NV_ENC_EVENT_PARAMS NV_ENC_EVENT_PARAMS;
+typedef struct _NV_ENC_REGISTER_RESOURCE NV_ENC_REGISTER_RESOURCE;
 typedef struct _NV_ENC_CREATE_MV_BUFFER NV_ENC_CREATE_MV_BUFFER;
 typedef struct _NV_ENC_MEONLY_PARAMS NV_ENC_MEONLY_PARAMS;
 typedef struct _NV_ENC_TIME_CODE NV_ENC_TIME_CODE;
@@ -70,6 +70,7 @@ typedef struct _NV_ENC_LOOKAHEAD_PIC_PARAMS NV_ENC_LOOKAHEAD_PIC_PARAMS;
 typedef struct _HEVC_3D_REFERENCE_DISPLAY_INFO HEVC_3D_REFERENCE_DISPLAY_INFO;
 typedef struct _MASTERING_DISPLAY_INFO MASTERING_DISPLAY_INFO;
 typedef struct _NV_ENC_FILM_GRAIN_PARAMS_AV1 NV_ENC_FILM_GRAIN_PARAMS_AV1;
+typedef struct _NV_ENC_FENCE_POINT_D3D12 NV_ENC_FENCE_POINT_D3D12;
 
 typedef enum _NV_ENC_BUFFER_FORMAT
 {
@@ -506,5 +507,41 @@ typedef struct __LINUX_NV_ENCODE_API_FUNCTION_LIST
     NVENCSTATUS (*nvEncLookaheadPicture)(void* encoder, NV_ENC_LOOKAHEAD_PIC_PARAMS *lookaheadParams);
     void *reserved2[275];
 } LINUX_NV_ENCODE_API_FUNCTION_LIST;
+
+/* Layouts must match the NVENC SDK. */
+typedef enum _NV_ENC_INPUT_RESOURCE_TYPE
+{
+    NV_ENC_INPUT_RESOURCE_TYPE_DIRECTX       = 0x0,
+    NV_ENC_INPUT_RESOURCE_TYPE_CUDADEVICEPTR = 0x1,
+    NV_ENC_INPUT_RESOURCE_TYPE_CUDAARRAY     = 0x2,
+    NV_ENC_INPUT_RESOURCE_TYPE_OPENGL_TEX    = 0x3,
+} NV_ENC_INPUT_RESOURCE_TYPE;
+
+typedef enum _NV_ENC_BUFFER_USAGE
+{
+    NV_ENC_INPUT_IMAGE              = 0x0,
+    NV_ENC_OUTPUT_MOTION_VECTOR     = 0x1,
+    NV_ENC_OUTPUT_BITSTREAM         = 0x2,
+    NV_ENC_OUTPUT_RECON             = 0x3,
+} NV_ENC_BUFFER_USAGE;
+
+struct _NV_ENC_REGISTER_RESOURCE
+{
+    uint32_t                    version;
+    NV_ENC_INPUT_RESOURCE_TYPE  resourceType;
+    uint32_t                    width;
+    uint32_t                    height;
+    uint32_t                    pitch;
+    uint32_t                    subResourceIndex;
+    void                       *resourceToRegister;
+    NV_ENC_REGISTERED_PTR       registeredResource;
+    NV_ENC_BUFFER_FORMAT        bufferFormat;
+    NV_ENC_BUFFER_USAGE         bufferUsage;
+    NV_ENC_FENCE_POINT_D3D12   *pInputFencePoint;
+    uint32_t                    chromaOffset[2];
+    uint32_t                    reserved1[246];
+    void                       *reserved2[61];
+};
+#define NV_ENC_REGISTER_RESOURCE_VER NVENCAPI_STRUCT_VERSION(5)
 
 #endif /* __WINE_NVENCODEAPI_H */
