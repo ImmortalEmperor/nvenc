@@ -290,6 +290,72 @@ typedef struct ID3D12DXVKInteropDevice4Vtbl_local
 
 struct ID3D12DXVKInteropDevice4_local { const ID3D12DXVKInteropDevice4Vtbl_local *lpVtbl; };
 
+/* A CUDA session doesn't signal D3D12 fences, so we do it on the CPU.
+ * Slots checked against Wine's d3d12.idl. */
+typedef struct ID3D12Fence_local ID3D12Fence_local;
+typedef struct ID3D12FenceVtbl_local
+{
+    /* IUnknown */
+    HRESULT (STDMETHODCALLTYPE *QueryInterface)(ID3D12Fence_local *self, REFIID riid, void **out);
+    ULONG   (STDMETHODCALLTYPE *AddRef)(ID3D12Fence_local *self);
+    ULONG   (STDMETHODCALLTYPE *Release)(ID3D12Fence_local *self);
+    /* ID3D12Object */
+    void *GetPrivateData;
+    void *SetPrivateData;
+    void *SetPrivateDataInterface;
+    void *SetName;
+    /* ID3D12DeviceChild */
+    void *GetDevice;
+    /* ID3D12Pageable: no methods */
+    /* ID3D12Fence */
+    UINT64  (STDMETHODCALLTYPE *GetCompletedValue)(ID3D12Fence_local *self);
+    HRESULT (STDMETHODCALLTYPE *SetEventOnCompletion)(ID3D12Fence_local *self, UINT64 value, HANDLE event);
+    HRESULT (STDMETHODCALLTYPE *Signal)(ID3D12Fence_local *self, UINT64 value);
+} ID3D12FenceVtbl_local;
+
+struct ID3D12Fence_local { const ID3D12FenceVtbl_local *lpVtbl; };
+
+/* A full wait makes the app's GPU writes visible to the CUDA encode that follows. */
+static void d3d12_fence_cpu_wait(void *pFence, UINT64 value)
+{
+    ID3D12Fence_local *fence = pFence;
+    HANDLE ev;
+
+    if (!fence)
+        return;
+    if (fence->lpVtbl->GetCompletedValue(fence) >= value)
+        return;
+
+    ev = CreateEventW(NULL, FALSE, FALSE, NULL);
+    if (!ev)
+    {
+        while (fence->lpVtbl->GetCompletedValue(fence) < value)
+            Sleep(0);
+        return;
+    }
+    if (SUCCEEDED(fence->lpVtbl->SetEventOnCompletion(fence, value, ev)))
+        WaitForSingleObject(ev, INFINITE);
+    CloseHandle(ev);
+}
+
+static void d3d12_fence_signal(void *pFence, UINT64 value)
+{
+    ID3D12Fence_local *fence = pFence;
+    if (fence)
+        fence->lpVtbl->Signal(fence, value);
+}
+
+/* The app waits on signalValue right after RegisterResource(). */
+static void d3d12_fence_settle(NV_ENC_FENCE_POINT_D3D12 *fp)
+{
+    if (!fp || !fp->pFence)
+        return;
+    if (fp->bWait && fp->waitValue)
+        d3d12_fence_cpu_wait(fp->pFence, fp->waitValue);
+    if (fp->bSignal)
+        d3d12_fence_signal(fp->pFence, fp->signalValue);
+}
+
 typedef enum {
     INTEROP_NONE = 0,
     INTEROP_D3D11,
@@ -324,6 +390,9 @@ typedef struct registered_resource
     CUcontext_local             ctx;
     CUexternalMemory_local      ext_mem;
     CUmipmappedArray_local      mip;
+    /* `registered` is an NVENC bitstream buffer replacing the app's D3D12 readback
+     * buffer. The CUDA fields are unused. */
+    int                         is_bitstream;
 } registered_resource;
 
 static CRITICAL_SECTION      g_state_lock;
@@ -411,6 +480,27 @@ static void state_remove(void *encoder)
             release_cuda_ctx(s->cuda_ctx);
         free(s);
     }
+}
+
+/* The host can't map or unregister these handles, so callers handle them here. */
+static BOOL is_our_bitstream(void *encoder, NV_ENC_REGISTERED_PTR h)
+{
+    registered_resource *r;
+    BOOL found = FALSE;
+
+    if (!h)
+        return FALSE;
+    EnterCriticalSection(&g_state_lock);
+    for (r = g_registered; r; r = r->next)
+    {
+        if (r->encoder == encoder && r->registered == h && r->is_bitstream)
+        {
+            found = TRUE;
+            break;
+        }
+    }
+    LeaveCriticalSection(&g_state_lock);
+    return found;
 }
 
 /* Caller holds g_state_lock. Takes a reference on the cached context. */
@@ -852,6 +942,44 @@ static NVENCSTATUS open_session_d3d12(NV_ENC_OPEN_ENCODE_SESSION_EX_PARAMS *para
     return NV_ENC_SUCCESS;
 }
 
+/* A CUDA session can't write to the app's D3D12 readback buffer, so use an NVENC
+ * bitstream buffer. The app reads it through NvEncLockBitstream. */
+static NVENCSTATUS register_output_bitstream_d3d12(encoder_state *st, NV_ENC_REGISTER_RESOURCE *params)
+{
+    NV_ENC_CREATE_BITSTREAM_BUFFER cbb;
+    registered_resource *r;
+    NVENCSTATUS rc;
+
+    memset(&cbb, 0, sizeof(cbb));
+    cbb.version = NV_ENC_CREATE_BITSTREAM_BUFFER_VER;
+
+    rc = origFunctions.nvEncCreateBitstreamBuffer(st->encoder, &cbb);
+    if (rc != NV_ENC_SUCCESS)
+    {
+        ERR("nvEncCreateBitstreamBuffer for D3D12 output failed: %d\n", rc);
+        return rc;
+    }
+
+    r = calloc(1, sizeof(*r));
+    if (!r)
+    {
+        origFunctions.nvEncDestroyBitstreamBuffer(st->encoder, cbb.bitstreamBuffer);
+        return NV_ENC_ERR_UNSUPPORTED_PARAM;
+    }
+    r->encoder      = st->encoder;
+    r->registered   = cbb.bitstreamBuffer;
+    r->is_bitstream = 1;
+
+    EnterCriticalSection(&g_state_lock);
+    r->next      = g_registered;
+    g_registered = r;
+    LeaveCriticalSection(&g_state_lock);
+
+    params->registeredResource = cbb.bitstreamBuffer;
+    TRACE("d3d12: output bitstream registered (buffer %p)\n", cbb.bitstreamBuffer);
+    return NV_ENC_SUCCESS;
+}
+
 static NVENCSTATUS register_resource_d3d12(encoder_state *st, NV_ENC_REGISTER_RESOURCE *params)
 {
     ID3D12DXVKInteropDevice4_local *iface = (ID3D12DXVKInteropDevice4_local *)st->interop_iface;
@@ -863,6 +991,9 @@ static NVENCSTATUS register_resource_d3d12(encoder_state *st, NV_ENC_REGISTER_RE
     NVENCSTATUS rc;
     unsigned int channels;
     CUarray_format_local fmt;
+
+    if (params->bufferUsage == NV_ENC_OUTPUT_BITSTREAM)
+        return register_output_bitstream_d3d12(st, params);
 
     hr = IUnknown_QueryInterface((IUnknown *)params->resourceToRegister,
                                  &IID_ID3D12Resource_local, (void **)&res);
@@ -886,6 +1017,11 @@ static NVENCSTATUS register_resource_d3d12(encoder_state *st, NV_ENC_REGISTER_RE
                            channels, fmt, params);
 
     ID3D12Resource_Release(res);
+
+    /* A CUDA session doesn't signal this fence, and the app would hang in
+     * CreateEncoder waiting for it. */
+    if (rc == NV_ENC_SUCCESS)
+        d3d12_fence_settle(params->pInputFencePoint);
     return rc;
 }
 
@@ -1008,7 +1144,40 @@ static NVENCSTATUS WINAPI NvEncDestroyBitstreamBuffer(void *encoder, NV_ENC_OUTP
 static NVENCSTATUS WINAPI NvEncEncodePicture(void *encoder, NV_ENC_PIC_PARAMS *encodePicParams)
 {
     NVENCSTATUS result;
+    encoder_state *st;
+
     TRACE("(%p, %p)\n", encoder, encodePicParams);
+
+    EnterCriticalSection(&g_state_lock);
+    st = state_find_locked(encoder);
+    LeaveCriticalSection(&g_state_lock);
+
+    /* A CUDA session can't read these D3D12 wrappers, so unwrap them and handle the
+     * fences on the CPU. */
+    if (st && st->kind == INTEROP_D3D12 && encodePicParams)
+    {
+        NV_ENC_PIC_PARAMS local = *encodePicParams;
+        NV_ENC_INPUT_RESOURCE_D3D12  *in  = encodePicParams->inputBuffer;
+        NV_ENC_OUTPUT_RESOURCE_D3D12 *out = encodePicParams->outputBitstream;
+
+        if (in)
+        {
+            if (in->inputFencePoint.bWait && in->inputFencePoint.pFence && in->inputFencePoint.waitValue)
+                d3d12_fence_cpu_wait(in->inputFencePoint.pFence, in->inputFencePoint.waitValue);
+            local.inputBuffer = in->pInputBuffer;
+        }
+        if (out)
+            local.outputBitstream = out->pOutputBuffer;
+
+        result = origFunctions.nvEncEncodePicture(encoder, &local);
+
+        if (out && out->outputFencePoint.bSignal && out->outputFencePoint.pFence)
+            d3d12_fence_signal(out->outputFencePoint.pFence, out->outputFencePoint.signalValue);
+
+        if (encodePicParams->completionEvent)
+            SetEvent(encodePicParams->completionEvent);
+        return result;
+    }
 
     result = origFunctions.nvEncEncodePicture(encoder, encodePicParams);
 
@@ -1020,13 +1189,43 @@ static NVENCSTATUS WINAPI NvEncEncodePicture(void *encoder, NV_ENC_PIC_PARAMS *e
 
 static NVENCSTATUS WINAPI NvEncLockBitstream(void *encoder, NV_ENC_LOCK_BITSTREAM *lockBitstreamBufferParams)
 {
+    encoder_state *st;
+    NVENCSTATUS rc;
+
     TRACE("(%p, %p)\n", encoder, lockBitstreamBufferParams);
+
+    EnterCriticalSection(&g_state_lock);
+    st = state_find_locked(encoder);
+    LeaveCriticalSection(&g_state_lock);
+
+    /* Lock the NVENC bitstream buffer behind the D3D12 wrapper. */
+    if (st && st->kind == INTEROP_D3D12 && lockBitstreamBufferParams && lockBitstreamBufferParams->outputBitstream)
+    {
+        NV_ENC_OUTPUT_RESOURCE_D3D12 *out = lockBitstreamBufferParams->outputBitstream;
+        void *wrapper = lockBitstreamBufferParams->outputBitstream;
+        lockBitstreamBufferParams->outputBitstream = out->pOutputBuffer;
+        rc = origFunctions.nvEncLockBitstream(encoder, lockBitstreamBufferParams);
+        lockBitstreamBufferParams->outputBitstream = wrapper;
+        return rc;
+    }
     return origFunctions.nvEncLockBitstream(encoder, lockBitstreamBufferParams);
 }
 
 static NVENCSTATUS WINAPI NvEncUnlockBitstream(void *encoder, NV_ENC_OUTPUT_PTR bitstreamBuffer)
 {
+    encoder_state *st;
+
     TRACE("(%p, %p)\n", encoder, bitstreamBuffer);
+
+    EnterCriticalSection(&g_state_lock);
+    st = state_find_locked(encoder);
+    LeaveCriticalSection(&g_state_lock);
+
+    if (st && st->kind == INTEROP_D3D12 && bitstreamBuffer)
+    {
+        NV_ENC_OUTPUT_RESOURCE_D3D12 *out = bitstreamBuffer;
+        return origFunctions.nvEncUnlockBitstream(encoder, out->pOutputBuffer);
+    }
     return origFunctions.nvEncUnlockBitstream(encoder, bitstreamBuffer);
 }
 
@@ -1073,12 +1272,23 @@ static NVENCSTATUS WINAPI NvEncUnregisterAsyncEvent(void *encoder, NV_ENC_EVENT_
 static NVENCSTATUS WINAPI NvEncMapInputResource(void *encoder, NV_ENC_MAP_INPUT_RESOURCE *mapInputResParams)
 {
     TRACE("(%p, %p)\n", encoder, mapInputResParams);
+
+    /* Already an NVENC bitstream buffer, which the host has no mapping for. */
+    if (mapInputResParams && is_our_bitstream(encoder, mapInputResParams->registeredResource))
+    {
+        mapInputResParams->mappedResource = mapInputResParams->registeredResource;
+        return NV_ENC_SUCCESS;
+    }
     return origFunctions.nvEncMapInputResource(encoder, mapInputResParams);
 }
 
 static NVENCSTATUS WINAPI NvEncUnmapInputResource(void *encoder, NV_ENC_INPUT_PTR mappedInputBuffer)
 {
     TRACE("(%p, %p)\n", encoder, mappedInputBuffer);
+
+    /* Never mapped by the host. */
+    if (is_our_bitstream(encoder, mappedInputBuffer))
+        return NV_ENC_SUCCESS;
     return origFunctions.nvEncUnmapInputResource(encoder, mappedInputBuffer);
 }
 
@@ -1176,6 +1386,14 @@ static NVENCSTATUS WINAPI NvEncUnregisterResource(void *encoder, NV_ENC_REGISTER
         }
     }
     LeaveCriticalSection(&g_state_lock);
+
+    /* Created by us, not registered with the host. */
+    if (r && r->is_bitstream)
+    {
+        status = origFunctions.nvEncDestroyBitstreamBuffer(encoder, registeredResource);
+        free(r);
+        return status;
+    }
 
     status = origFunctions.nvEncUnregisterResource(encoder, registeredResource);
 

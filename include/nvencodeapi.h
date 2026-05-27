@@ -23,6 +23,8 @@
 #ifndef __WINE_NVENCODEAPI_H
 #define __WINE_NVENCODEAPI_H
 
+/* Structs this DLL creates itself use this version. The host rejects them with
+ * NV_ENC_ERR_INVALID_VERSION if it's out of date. */
 #define NVENCAPI_MAJOR_VERSION 13
 #define NVENCAPI_MINOR_VERSION 1
 
@@ -522,7 +524,7 @@ typedef enum _NV_ENC_BUFFER_USAGE
     NV_ENC_INPUT_IMAGE              = 0x0,
     NV_ENC_OUTPUT_MOTION_VECTOR     = 0x1,
     NV_ENC_OUTPUT_BITSTREAM         = 0x2,
-    NV_ENC_OUTPUT_RECON             = 0x3,
+    NV_ENC_OUTPUT_RECON             = 0x4,
 } NV_ENC_BUFFER_USAGE;
 
 struct _NV_ENC_REGISTER_RESOURCE
@@ -543,5 +545,107 @@ struct _NV_ENC_REGISTER_RESOURCE
     void                       *reserved2[61];
 };
 #define NV_ENC_REGISTER_RESOURCE_VER NVENCAPI_STRUCT_VERSION(5)
+
+/* Layouts and _VER values must match the NVENC SDK. */
+
+struct _NV_ENC_FENCE_POINT_D3D12
+{
+    uint32_t                version;
+    uint32_t                reserved;
+    void                   *pFence;            /* ID3D12Fence */
+    uint64_t                waitValue;
+    uint64_t                signalValue;
+    uint32_t                bWait             : 1;
+    uint32_t                bSignal           : 1;
+    uint32_t                reservedBitField  : 30;
+    uint32_t                reserved1[7];
+};
+#define NV_ENC_FENCE_POINT_D3D12_VER NVENCAPI_STRUCT_VERSION(1)
+
+typedef struct _NV_ENC_INPUT_RESOURCE_D3D12
+{
+    uint32_t                    version;
+    uint32_t                    reserved;
+    NV_ENC_INPUT_PTR            pInputBuffer;
+    NV_ENC_FENCE_POINT_D3D12    inputFencePoint;
+    uint32_t                    reserved1[16];
+    void                       *reserved2[16];
+} NV_ENC_INPUT_RESOURCE_D3D12;
+#define NV_ENC_INPUT_RESOURCE_D3D12_VER NVENCAPI_STRUCT_VERSION(1)
+
+typedef struct _NV_ENC_OUTPUT_RESOURCE_D3D12
+{
+    uint32_t                    version;
+    uint32_t                    reserved;
+    NV_ENC_INPUT_PTR            pOutputBuffer;
+    NV_ENC_FENCE_POINT_D3D12    outputFencePoint;
+    uint32_t                    reserved1[16];
+    void                       *reserved2[16];
+} NV_ENC_OUTPUT_RESOURCE_D3D12;
+#define NV_ENC_OUTPUT_RESOURCE_D3D12_VER NVENCAPI_STRUCT_VERSION(1)
+
+struct _NV_ENC_CREATE_BITSTREAM_BUFFER
+{
+    uint32_t              version;
+    uint32_t              size;
+    uint32_t              memoryHeap;           /* NV_ENC_MEMORY_HEAP */
+    uint32_t              reserved;
+    NV_ENC_OUTPUT_PTR     bitstreamBuffer;
+    void                 *bitstreamBufferPtr;
+    uint32_t              reserved1[58];
+    void                 *reserved2[64];
+};
+#define NV_ENC_CREATE_BITSTREAM_BUFFER_VER NVENCAPI_STRUCT_VERSION(1)
+
+struct _NV_ENC_MAP_INPUT_RESOURCE
+{
+    uint32_t                   version;
+    uint32_t                   subResourceIndex;
+    void                      *inputResource;
+    NV_ENC_REGISTERED_PTR      registeredResource;
+    NV_ENC_INPUT_PTR           mappedResource;
+    NV_ENC_BUFFER_FORMAT       mappedBufferFmt;
+    uint32_t                   reserved1[251];
+    void                      *reserved2[63];
+};
+#define NV_ENC_MAP_INPUT_RESOURCE_VER NVENCAPI_STRUCT_VERSION(4)
+
+struct _NV_ENC_LOCK_BITSTREAM
+{
+    uint32_t                version;
+    uint32_t                doNotWait         : 1;
+    uint32_t                ltrFrame          : 1;
+    uint32_t                getRCStats        : 1;
+    uint32_t                reservedBitFields : 29;
+    void                   *outputBitstream;
+    uint32_t               *sliceOffsets;
+    uint32_t                frameIdx;
+    uint32_t                hwEncodeStatus;
+    uint32_t                numSlices;
+    uint32_t                bitstreamSizeInBytes;
+    uint64_t                outputTimeStamp;
+    uint64_t                outputDuration;
+    void                   *bitstreamBufferPtr;
+    int                     pictureType;         /* NV_ENC_PIC_TYPE */
+    int                     pictureStruct;       /* NV_ENC_PIC_STRUCT */
+    uint32_t                frameAvgQP;
+    uint32_t                frameSatd;
+    uint32_t                ltrFrameIdx;
+    uint32_t                ltrFrameBitmap;
+    uint32_t                temporalId;
+    uint32_t                intraMBCount;
+    uint32_t                interMBCount;
+    int32_t                 averageMVX;
+    int32_t                 averageMVY;
+    uint32_t                alphaLayerSizeInBytes;
+    uint32_t                outputStatsPtrSize;
+    uint32_t                reserved;
+    void                   *outputStatsPtr;
+    uint32_t                frameIdxDisplay;
+    uint32_t                reserved1[219];
+    void                   *reserved2[63];
+    uint32_t                reservedInternal[8];
+};
+#define NV_ENC_LOCK_BITSTREAM_VER (NVENCAPI_STRUCT_VERSION(2) | ( 1<<31 ))
 
 #endif /* __WINE_NVENCODEAPI_H */
