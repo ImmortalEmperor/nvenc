@@ -107,6 +107,10 @@ typedef CUresult_local (WINAPI *PFN_cuCtxCreate)(CUcontext_local *pctx, unsigned
 typedef CUresult_local (WINAPI *PFN_cuCtxDestroy)(CUcontext_local ctx);
 typedef CUresult_local (WINAPI *PFN_cuCtxPushCurrent)(CUcontext_local ctx);
 typedef CUresult_local (WINAPI *PFN_cuCtxPopCurrent)(CUcontext_local *pctx);
+typedef CUresult_local (WINAPI *PFN_cuCtxSetCurrent)(CUcontext_local ctx);
+typedef CUresult_local (WINAPI *PFN_cuCtxGetCurrent)(CUcontext_local *pctx);
+typedef CUresult_local (WINAPI *PFN_cuDevicePrimaryCtxRetain)(CUcontext_local *pctx, CUdevice_local dev);
+typedef CUresult_local (WINAPI *PFN_cuDevicePrimaryCtxRelease)(CUdevice_local dev);
 typedef CUresult_local (WINAPI *PFN_cuImportExternalMemory)(CUexternalMemory_local *out, const CUDA_EXTERNAL_MEMORY_HANDLE_DESC_local *desc);
 typedef CUresult_local (WINAPI *PFN_cuDestroyExternalMemory)(CUexternalMemory_local em);
 typedef CUresult_local (WINAPI *PFN_cuExternalMemoryGetMappedMipmappedArray)(CUmipmappedArray_local *out, CUexternalMemory_local em, const CUDA_EXTERNAL_MEMORY_MIPMAPPED_ARRAY_DESC_local *desc);
@@ -125,6 +129,10 @@ static PFN_cuCtxCreate                            pCuCtxCreate = NULL;
 static PFN_cuCtxDestroy                           pCuCtxDestroy = NULL;
 static PFN_cuCtxPushCurrent                       pCuCtxPushCurrent = NULL;
 static PFN_cuCtxPopCurrent                        pCuCtxPopCurrent = NULL;
+static PFN_cuCtxSetCurrent                        pCuCtxSetCurrent = NULL;
+static PFN_cuCtxGetCurrent                        pCuCtxGetCurrent = NULL;
+static PFN_cuDevicePrimaryCtxRetain               pCuDevicePrimaryCtxRetain = NULL;
+static PFN_cuDevicePrimaryCtxRelease              pCuDevicePrimaryCtxRelease = NULL;
 static PFN_cuImportExternalMemory                 pCuImportExternalMemory = NULL;
 static PFN_cuDestroyExternalMemory                pCuDestroyExternalMemory = NULL;
 static PFN_cuExternalMemoryGetMappedMipmappedArray pCuExternalMemoryGetMappedMipmappedArray = NULL;
@@ -156,6 +164,10 @@ static BOOL load_cuda(void)
     LOAD("cuCtxDestroy",                           pCuCtxDestroy);
     LOAD("cuCtxPushCurrent",                       pCuCtxPushCurrent);
     LOAD("cuCtxPopCurrent",                        pCuCtxPopCurrent);
+    LOAD("cuCtxSetCurrent",                        pCuCtxSetCurrent);
+    LOAD("cuCtxGetCurrent",                        pCuCtxGetCurrent);
+    LOAD("cuDevicePrimaryCtxRetain",               pCuDevicePrimaryCtxRetain);
+    LOAD("cuDevicePrimaryCtxRelease",              pCuDevicePrimaryCtxRelease);
     LOAD("cuImportExternalMemory",                 pCuImportExternalMemory);
     LOAD("cuDestroyExternalMemory",                pCuDestroyExternalMemory);
     LOAD("cuExternalMemoryGetMappedMipmappedArray", pCuExternalMemoryGetMappedMipmappedArray);
@@ -375,14 +387,18 @@ static void state_remove(void *encoder)
     while (orphans)
     {
         registered_resource *next = orphans->next;
+        CUcontext_local prev_ctx = NULL;
         if (orphans->ctx)
-            pCuCtxPushCurrent(orphans->ctx);
+        {
+            pCuCtxGetCurrent(&prev_ctx);
+            pCuCtxSetCurrent(orphans->ctx);
+        }
         if (orphans->mip)
             pCuMipmappedArrayDestroy(orphans->mip);
         if (orphans->ext_mem)
             pCuDestroyExternalMemory(orphans->ext_mem);
         if (orphans->ctx)
-            pCuCtxPopCurrent(NULL);
+            pCuCtxSetCurrent(prev_ctx);
         free(orphans);
         orphans = next;
     }
@@ -455,7 +471,7 @@ static CUcontext_local create_or_fetch_cuda_ctx_for_uuid(const char *vk_uuid)
             return ctx;
 
         /* Don't hold g_state_lock across the driver call. */
-        if (pCuCtxCreate(&ctx, 0, dev) != CUDA_SUCCESS_LOCAL)
+        if (pCuDevicePrimaryCtxRetain(&ctx, dev) != CUDA_SUCCESS_LOCAL)
             return NULL;
 
         EnterCriticalSection(&g_state_lock);
@@ -463,13 +479,13 @@ static CUcontext_local create_or_fetch_cuda_ctx_for_uuid(const char *vk_uuid)
         if (raced)
         {
             LeaveCriticalSection(&g_state_lock);
-            pCuCtxDestroy(ctx);
+            pCuDevicePrimaryCtxRelease(dev);
             return raced;
         }
         if (!cache_insert_locked(dev, ctx))
         {
             LeaveCriticalSection(&g_state_lock);
-            pCuCtxDestroy(ctx);
+            pCuDevicePrimaryCtxRelease(dev);
             return NULL;
         }
         LeaveCriticalSection(&g_state_lock);
@@ -492,10 +508,11 @@ static void release_cuda_ctx(CUcontext_local ctx)
         {
             if (--e->refcount == 0)
             {
+                CUdevice_local dev = e->device;
                 *link = e->next;
                 LeaveCriticalSection(&g_state_lock);
-                if (pCuCtxDestroy)
-                    pCuCtxDestroy(e->ctx);
+                if (pCuDevicePrimaryCtxRelease)
+                    pCuDevicePrimaryCtxRelease(dev);
                 free(e);
                 return;
             }
@@ -506,9 +523,7 @@ static void release_cuda_ctx(CUcontext_local ctx)
     LeaveCriticalSection(&g_state_lock);
 
     /* Can't release a primary context without its device, which only the cache holds. */
-    WARN("release_cuda_ctx: ctx %p not in cache; destroying directly\n", ctx);
-    if (pCuCtxDestroy)
-        pCuCtxDestroy(ctx);
+    WARN("release_cuda_ctx: ctx %p not in cache; cannot release primary ctx\n", ctx);
 }
 
 static unsigned int dxgi_format_channel_count(DXGI_FORMAT format)
@@ -551,20 +566,31 @@ static NVENCSTATUS register_via_cuda(encoder_state *st,
     CUexternalMemory_local ext_mem = NULL;
     CUmipmappedArray_local mip = NULL;
     CUarray_local arr = NULL;
+    CUcontext_local prev_ctx = NULL;
+    CUresult_local rc;
     NVENCSTATUS result;
 
-    pCuCtxPushCurrent(st->cuda_ctx);
+    /* NVENC can leave the thread with no current context, which makes the import
+     * fail with CUDA_ERROR_INVALID_CONTEXT. */
+    pCuCtxGetCurrent(&prev_ctx);
+    rc = pCuCtxSetCurrent(st->cuda_ctx);
+    if (rc != CUDA_SUCCESS_LOCAL)
+    {
+        ERR("cuCtxSetCurrent failed: %d (ctx=%p)\n", rc, st->cuda_ctx);
+        return NV_ENC_ERR_UNSUPPORTED_PARAM;
+    }
 
     memset(&mem_desc, 0, sizeof(mem_desc));
     mem_desc.type = CU_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_LOCAL;
     mem_desc.handle.fd = fd;
     mem_desc.size = offset + length;
 
-    if (pCuImportExternalMemory(&ext_mem, &mem_desc) != CUDA_SUCCESS_LOCAL)
+    rc = pCuImportExternalMemory(&ext_mem, &mem_desc);
+    if (rc != CUDA_SUCCESS_LOCAL)
     {
-        pCuCtxPopCurrent(NULL);
-        ERR("cuImportExternalMemory failed for fd=%d size=%llu\n", fd,
-            (unsigned long long)(offset + length));
+        ERR("cuImportExternalMemory failed: %d (ctx=%p fd=%d size=%llu)\n", rc,
+            st->cuda_ctx, fd, (unsigned long long)(offset + length));
+        pCuCtxSetCurrent(prev_ctx);
         return NV_ENC_ERR_UNSUPPORTED_PARAM;
     }
 
@@ -578,24 +604,26 @@ static NVENCSTATUS register_via_cuda(encoder_state *st,
     mip_desc.arrayDesc.Format = fmt;
     mip_desc.arrayDesc.Flags = CUDA_ARRAY3D_SURFACE_LDST_LOCAL;
 
-    if (pCuExternalMemoryGetMappedMipmappedArray(&mip, ext_mem, &mip_desc) != CUDA_SUCCESS_LOCAL)
+    rc = pCuExternalMemoryGetMappedMipmappedArray(&mip, ext_mem, &mip_desc);
+    if (rc != CUDA_SUCCESS_LOCAL)
     {
+        ERR("cuExternalMemoryGetMappedMipmappedArray failed: %d\n", rc);
         pCuDestroyExternalMemory(ext_mem);
-        pCuCtxPopCurrent(NULL);
-        ERR("cuExternalMemoryGetMappedMipmappedArray failed\n");
+        pCuCtxSetCurrent(prev_ctx);
         return NV_ENC_ERR_UNSUPPORTED_PARAM;
     }
 
-    if (pCuMipmappedArrayGetLevel(&arr, mip, 0) != CUDA_SUCCESS_LOCAL)
+    rc = pCuMipmappedArrayGetLevel(&arr, mip, 0);
+    if (rc != CUDA_SUCCESS_LOCAL)
     {
+        ERR("cuMipmappedArrayGetLevel failed: %d\n", rc);
         pCuMipmappedArrayDestroy(mip);
         pCuDestroyExternalMemory(ext_mem);
-        pCuCtxPopCurrent(NULL);
-        ERR("cuMipmappedArrayGetLevel failed\n");
+        pCuCtxSetCurrent(prev_ctx);
         return NV_ENC_ERR_UNSUPPORTED_PARAM;
     }
 
-    pCuCtxPopCurrent(NULL);
+    pCuCtxSetCurrent(prev_ctx);
 
     params->resourceType = NV_ENC_INPUT_RESOURCE_TYPE_CUDAARRAY;
     params->resourceToRegister = arr;
@@ -605,10 +633,10 @@ static NVENCSTATUS register_via_cuda(encoder_state *st,
     if (result != NV_ENC_SUCCESS)
     {
         /* Destroying mip also frees the CUarray. */
-        pCuCtxPushCurrent(st->cuda_ctx);
+        pCuCtxSetCurrent(st->cuda_ctx);
         pCuMipmappedArrayDestroy(mip);
         pCuDestroyExternalMemory(ext_mem);
-        pCuCtxPopCurrent(NULL);
+        pCuCtxSetCurrent(prev_ctx);
         return result;
     }
 
@@ -617,10 +645,10 @@ static NVENCSTATUS register_via_cuda(encoder_state *st,
         if (!r)
         {
             origFunctions.nvEncUnregisterResource(st->encoder, params->registeredResource);
-            pCuCtxPushCurrent(st->cuda_ctx);
+            pCuCtxSetCurrent(st->cuda_ctx);
             pCuMipmappedArrayDestroy(mip);
             pCuDestroyExternalMemory(ext_mem);
-            pCuCtxPopCurrent(NULL);
+            pCuCtxSetCurrent(prev_ctx);
             return NV_ENC_ERR_UNSUPPORTED_PARAM;
         }
         r->encoder    = st->encoder;
@@ -1153,14 +1181,18 @@ static NVENCSTATUS WINAPI NvEncUnregisterResource(void *encoder, NV_ENC_REGISTER
 
     if (r)
     {
+        CUcontext_local prev_ctx = NULL;
         if (r->ctx)
-            pCuCtxPushCurrent(r->ctx);
+        {
+            pCuCtxGetCurrent(&prev_ctx);
+            pCuCtxSetCurrent(r->ctx);
+        }
         if (r->mip)
             pCuMipmappedArrayDestroy(r->mip);
         if (r->ext_mem)
             pCuDestroyExternalMemory(r->ext_mem);
         if (r->ctx)
-            pCuCtxPopCurrent(NULL);
+            pCuCtxSetCurrent(prev_ctx);
         free(r);
     }
     return status;
