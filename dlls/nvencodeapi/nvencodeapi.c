@@ -219,6 +219,29 @@ typedef struct IDXGIVkInteropSurfaceVtbl_local
 
 struct IDXGIVkInteropSurface_local { const IDXGIVkInteropSurfaceVtbl_local *lpVtbl; };
 
+/* Only GetAdapter (slot 7) is called. */
+static const IID IID_IDXGIDevice_local =
+    { 0x54ec77fa, 0x1377, 0x44e6, { 0x8c, 0x32, 0x88, 0xfd, 0x5f, 0x44, 0xc8, 0x4c } };
+
+typedef struct IDXGIDevice_local IDXGIDevice_local;
+typedef struct IDXGIDeviceVtbl_local
+{
+    /* IUnknown */
+    HRESULT (STDMETHODCALLTYPE *QueryInterface)(IDXGIDevice_local *self, REFIID riid, void **out);
+    ULONG   (STDMETHODCALLTYPE *AddRef)(IDXGIDevice_local *self);
+    ULONG   (STDMETHODCALLTYPE *Release)(IDXGIDevice_local *self);
+    /* IDXGIObject */
+    void   *SetPrivateData;
+    void   *SetPrivateDataInterface;
+    void   *GetPrivateData;
+    void   *GetParent;
+    /* IDXGIDevice */
+    HRESULT (STDMETHODCALLTYPE *GetAdapter)(IDXGIDevice_local *self, IUnknown **adapter);
+    /* Remaining methods unused */
+} IDXGIDeviceVtbl_local;
+
+struct IDXGIDevice_local { const IDXGIDeviceVtbl_local *lpVtbl; };
+
 typedef struct ID3D12DXVKInteropDevice4_local ID3D12DXVKInteropDevice4_local;
 typedef struct ID3D12DXVKInteropDevice4Vtbl_local
 {
@@ -614,6 +637,33 @@ static NVENCSTATUS register_via_cuda(encoder_state *st,
     return result;
 }
 
+/* DXVK exposes the interop adapter on IDXGIAdapter, not ID3D11Device. Returns a
+ * reference, or NULL if this isn't a DXVK device. */
+static IDXGIVkInteropAdapter_local *get_d3d11_interop_adapter(IUnknown *device)
+{
+    IDXGIDevice_local *dxgi_device = NULL;
+    IUnknown          *dxgi_adapter = NULL;
+    IDXGIVkInteropAdapter_local *interop = NULL;
+    HRESULT hr;
+
+    hr = IUnknown_QueryInterface(device, &IID_IDXGIDevice_local, (void **)&dxgi_device);
+    if (FAILED(hr) || !dxgi_device)
+        return NULL;
+
+    hr = dxgi_device->lpVtbl->GetAdapter(dxgi_device, &dxgi_adapter);
+    dxgi_device->lpVtbl->Release(dxgi_device);
+    if (FAILED(hr) || !dxgi_adapter)
+        return NULL;
+
+    hr = IUnknown_QueryInterface(dxgi_adapter, &IID_IDXGIVkInteropAdapter_local,
+                                 (void **)&interop);
+    IUnknown_Release(dxgi_adapter);
+    if (FAILED(hr) || !interop)
+        return NULL;
+
+    return interop;
+}
+
 static NVENCSTATUS open_session_d3d11(NV_ENC_OPEN_ENCODE_SESSION_EX_PARAMS *params, void **encoder)
 {
     NV_ENC_OPEN_ENCODE_SESSION_EX_PARAMS local_params = *params;
@@ -622,12 +672,9 @@ static NVENCSTATUS open_session_d3d11(NV_ENC_OPEN_ENCODE_SESSION_EX_PARAMS *para
     CUcontext_local ctx;
     encoder_state *st;
     NVENCSTATUS status;
-    HRESULT hr;
 
-    hr = IUnknown_QueryInterface((IUnknown *)params->device,
-                                 &IID_IDXGIVkInteropAdapter_local,
-                                 (void **)&adapter);
-    if (FAILED(hr) || !adapter)
+    adapter = get_d3d11_interop_adapter((IUnknown *)params->device);
+    if (!adapter)
         return NV_ENC_ERR_UNSUPPORTED_PARAM;
 
     adapter->lpVtbl->GetAdapterUUID(adapter, vk_uuid);
@@ -1043,9 +1090,7 @@ static NVENCSTATUS WINAPI NvEncOpenEncodeSessionEx(NV_ENC_OPEN_ENCODE_SESSION_EX
             d12->lpVtbl->Release(d12);
             return open_session_d3d12(openSessionExParams, encoder);
         }
-        if (SUCCEEDED(IUnknown_QueryInterface((IUnknown *)openSessionExParams->device,
-                                              &IID_IDXGIVkInteropAdapter_local,
-                                              (void **)&d11)))
+        if ((d11 = get_d3d11_interop_adapter((IUnknown *)openSessionExParams->device)))
         {
             d11->lpVtbl->Release(d11);
             return open_session_d3d11(openSessionExParams, encoder);
