@@ -24,7 +24,7 @@
 #define __WINE_NVENCODEAPI_H
 
 #define NVENCAPI_MAJOR_VERSION 13
-#define NVENCAPI_MINOR_VERSION 0
+#define NVENCAPI_MINOR_VERSION 1
 
 #define NVENCAPI_VERSION (NVENCAPI_MAJOR_VERSION | (NVENCAPI_MINOR_VERSION << 24))
 #define NVENCAPI_STRUCT_VERSION(ver) ((uint32_t)NVENCAPI_VERSION | ((ver)<<16) | (0x7 << 28))
@@ -61,7 +61,6 @@ typedef struct _NV_ENC_REGISTER_RESOURCE NV_ENC_REGISTER_RESOURCE;
 typedef struct _NV_ENC_STAT NV_ENC_STAT;
 typedef struct _NV_ENC_SEQUENCE_PARAM_PAYLOAD NV_ENC_SEQUENCE_PARAM_PAYLOAD;
 typedef struct _NV_ENC_EVENT_PARAMS NV_ENC_EVENT_PARAMS;
-typedef struct _NV_ENC_OPEN_ENCODE_SESSIONEX_PARAMS NV_ENC_OPEN_ENCODE_SESSIONEX_PARAMS;
 typedef struct _NV_ENC_CREATE_MV_BUFFER NV_ENC_CREATE_MV_BUFFER;
 typedef struct _NV_ENC_MEONLY_PARAMS NV_ENC_MEONLY_PARAMS;
 typedef struct _NV_ENC_TIME_CODE NV_ENC_TIME_CODE;
@@ -144,14 +143,14 @@ typedef struct _CONTENT_LIGHT_LEVEL
 
 typedef struct _NV_ENC_CLOCK_TIMESTAMP_SET
 {
-    uint32_t countingType            : 1;
+    uint32_t countingTypeLSB         : 1;
     uint32_t discontinuityFlag       : 1;
     uint32_t cntDroppedFrames        : 1;
     uint32_t nFrames                 : 8;
     uint32_t secondsValue            : 6;
     uint32_t minutesValue            : 6;
     uint32_t hoursValue              : 5;
-    uint32_t reserved2               : 4;
+    uint32_t countingTypeMSB         : 4;
     uint32_t timeOffset;
 } NV_ENC_CLOCK_TIMESTAMP_SET;
 
@@ -390,7 +389,7 @@ typedef struct _NV_ENC_PIC_PARAMS
     uint32_t qpDeltaMapSize;
     uint32_t reservedBitFields;
     uint16_t meHintRefPicDist[2];
-    uint32_t reserved4;
+    int32_t diffPicNumHint;
     NV_ENC_INPUT_PTR alphaBuffer;
     NVENC_EXTERNAL_ME_SB_HINT *meExternalSbHints;
     uint32_t meSbHintsCount;
