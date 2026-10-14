@@ -26,6 +26,8 @@
 @ stub cuvidConvertYUVToRGBArray
 @ stdcall cuvidGetDecodeStatus(ptr long ptr) wine_cuvidGetDecodeStatus
 @ stdcall cuvidGetDecoderCaps(ptr) wine_cuvidGetDecoderCaps
+@ stdcall cuvidRegisterDecodeSurfaces(ptr ptr) wine_cuvidRegisterDecodeSurfaces
+@ stdcall cuvidDecodePictureAsync(ptr ptr ptr) wine_cuvidDecodePictureAsync
 @ stub cuvidReconfigureDecoder
 @ stub NvToolCreateInterface
 @ stub NvToolDestroyInterface

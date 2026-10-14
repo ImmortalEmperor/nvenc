@@ -52,6 +52,8 @@ static CUresult (*pcuvidGetDecoderCaps)(CUVIDDECODECAPS *pdc);
 static CUresult (*pcuvidGetDecodeStatus)(CUvideodecoder hDecoder, int nPicIdx, CUVIDGETDECODESTATUS* pDecodeStatus);
 static CUresult (*pcuvidMapVideoFrame64)(CUvideodecoder hDecoder, int nPicIdx, unsigned long long *pDevPtr, unsigned int *pPitch, CUVIDPROCPARAMS *pVPP);
 static CUresult (*pcuvidUnmapVideoFrame64)(CUvideodecoder hDecoder, unsigned long long DevPtr);
+static CUresult (*pcuvidRegisterDecodeSurfaces)(CUvideodecoder hDecoder, CUVIDREGISTERDECODESURFACESINFO *pDecSurfInfo);
+static CUresult (*pcuvidDecodePictureAsync)(CUvideodecoder hDecoder, CUVIDPICPARAMS *pPicParams, CUstream strm);
 
 static void *cuvid_handle = NULL;
 
@@ -90,6 +92,8 @@ static BOOL load_functions(void)
     LOAD_FUNCPTR(cuvidGetDecodeStatus);
     LOAD_FUNCPTR(cuvidMapVideoFrame64);
     LOAD_FUNCPTR(cuvidUnmapVideoFrame64);
+    LOAD_FUNCPTR(cuvidRegisterDecodeSurfaces);
+    LOAD_FUNCPTR(cuvidDecodePictureAsync);
 
     #undef LOAD_FUNCPTR
 
@@ -205,10 +209,10 @@ CUresult WINAPI wine_cuvidCreateDecoder(CUvideodecoder *phDecoder, CUVIDDECODECR
         linux_dci.target_rect.right     = pdci->target_rect.right;
         linux_dci.target_rect.bottom    = pdci->target_rect.bottom;
         linux_dci.enableHistogram       = pdci->enableHistogram;
+        linux_dci.enableDecodeFeatures  = pdci->enableDecodeFeatures;
         linux_dci.Reserved2[0]          = pdci->Reserved2[0];
         linux_dci.Reserved2[1]          = pdci->Reserved2[1];
         linux_dci.Reserved2[2]          = pdci->Reserved2[2];
-        linux_dci.Reserved2[3]          = pdci->Reserved2[3];
     }
 
     return pcuvidCreateDecoder(phDecoder, pdci ? &linux_dci : NULL);
@@ -483,6 +487,18 @@ CUresult WINAPI wine_cuvidUnmapVideoFrame64(CUvideodecoder hDecoder, unsigned lo
 {
     TRACE("(%p, %llu)\n", hDecoder, DevPtr);
     return pcuvidUnmapVideoFrame64(hDecoder, DevPtr);
+}
+
+CUresult WINAPI wine_cuvidRegisterDecodeSurfaces(CUvideodecoder hDecoder, CUVIDREGISTERDECODESURFACESINFO *pDecSurfInfo)
+{
+    TRACE("(%p, %p)\n", hDecoder, pDecSurfInfo);
+    return pcuvidRegisterDecodeSurfaces(hDecoder, pDecSurfInfo);
+}
+
+CUresult WINAPI wine_cuvidDecodePictureAsync(CUvideodecoder hDecoder, CUVIDPICPARAMS *pPicParams, CUstream strm)
+{
+    TRACE("(%p, %p, %p)\n", hDecoder, pPicParams, strm);
+    return pcuvidDecodePictureAsync(hDecoder, pPicParams, strm);
 }
 
 BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved)

@@ -23,11 +23,20 @@
 
 typedef void *CUvideodecoder;
 typedef void *CUvideoctxlock;
+typedef long long CUvideotimestamp;
 
 /* the following structures are documented but we don't need to know the content */
 typedef struct _CUVIDPROCPARAMS CUVIDPROCPARAMS;
 typedef struct _CUVIDDECODECAPS CUVIDDECODECAPS;
 typedef struct _CUVIDGETDECODESTATUS CUVIDGETDECODESTATUS;
+typedef struct _CUVIDDECODESTATSHEADER CUVIDDECODESTATSHEADER;
+typedef struct _CUVIDDECODESTATS CUVIDDECODESTATS;
+typedef struct _CUVIDREGISTERDECODESURFACESINFO CUVIDREGISTERDECODESURFACESINFO;
+typedef struct _CUVIDPROCPARAMSEXT CUVIDPROCPARAMSEXT;
+
+typedef enum cuvidMaxNumRegisterDecodeSurfaces_enum {
+    MAX_NUM_REGISTERED_DECODE_SURFACES = 32
+} cuvidMaxNumRegisterDecodeSurfaces;
 
 typedef enum cudaVideoCodec_enum
 {
@@ -66,7 +75,13 @@ typedef enum cudaVideoSurfaceFormat_enum
     cudaVideoSurfaceFormat_YUV444=2,
     cudaVideoSurfaceFormat_YUV444_16Bit=3,
     cudaVideoSurfaceFormat_NV16=4,
-    cudaVideoSurfaceFormat_P216=5
+    cudaVideoSurfaceFormat_P216=5,
+    cudaVideoSurfaceFormat_NV12_Opaque=6,
+    cudaVideoSurfaceFormat_P016_Opaque=7,
+    cudaVideoSurfaceFormat_YUV444_Opaque=8,
+    cudaVideoSurfaceFormat_YUV444_16Bit_Opaque=9,
+    cudaVideoSurfaceFormat_NV16_Opaque=10,
+    cudaVideoSurfaceFormat_P216_Opaque=11
 } cudaVideoSurfaceFormat;
 
 typedef enum cudaVideoDeinterlaceMode_enum
@@ -75,6 +90,28 @@ typedef enum cudaVideoDeinterlaceMode_enum
     cudaVideoDeinterlaceMode_Bob,
     cudaVideoDeinterlaceMode_Adaptive
 } cudaVideoDeinterlaceMode;
+
+typedef enum cudaVideoCreateFlags_enum
+{
+    cudaVideoCreate_Default     = 0x00,
+    cudaVideoCreate_PreferCUDA  = 0x01,
+    cudaVideoCreate_PreferDXVA  = 0x02,
+    cudaVideoCreate_PreferCUVID = 0x04
+} cudaVideoCreateFlags;
+
+typedef enum cuvidDecodeStatus_enum
+{
+    cuvidDecodeStatus_Invalid         = 0,
+    cuvidDecodeStatus_InProgress      = 1,
+    cuvidDecodeStatus_Success         = 2,
+    cuvidDecodeStatus_Error           = 8,
+    cuvidDecodeStatus_Error_Concealed = 9,
+} cuvidDecodeStatus;
+
+typedef enum cuvidDecodeFeature_enum
+{
+    cuvidDecodeFeature_DecStats         = 0,
+} cuvidDecodeFeature;
 
 typedef struct _LINUX_CUVIDDECODECREATEINFO
 {
@@ -110,7 +147,8 @@ typedef struct _LINUX_CUVIDDECODECREATEINFO
         short bottom;
     } target_rect;
     unsigned long enableHistogram;
-    unsigned long Reserved2[4];
+    unsigned long enableDecodeFeatures;
+    unsigned long Reserved2[3];
 } LINUX_CUVIDDECODECREATEINFO;
 
 typedef struct _CUVIDDECODECREATEINFO
@@ -147,7 +185,8 @@ typedef struct _CUVIDDECODECREATEINFO
         short bottom;
     } target_rect;
     ULONG enableHistogram;
-    ULONG Reserved2[4];
+    ULONG enableDecodeFeatures;
+    ULONG Reserved2[3];
 } CUVIDDECODECREATEINFO;
 
 #endif /* __WINE_CUVIDDEC_H */

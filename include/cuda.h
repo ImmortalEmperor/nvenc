@@ -36,5 +36,6 @@ typedef uint64_t cuuint64_t;
 
 typedef int CUresult;
 typedef void *CUcontext;
+typedef void *CUstream;
 
 #endif /* __WINE_CUDA_H */
